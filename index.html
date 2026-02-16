@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TCSI Planner - Hub Étudiant</title>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- Babel pour compiler le JSX à la volée -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Ical.js pour le parsing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ical.js/1.5.0/ical.min.js"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Configuration Tailwind personnalisée -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        navy: {
+                            800: '#1e293b', // Bleu Marine TCSI
+                            900: '#0f172a',
+                        },
+                        industrial: {
+                            500: '#f97316', // Orange Industriel
+                            600: '#ea580c',
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body { background-color: #f8fafc; }
+        /* Scrollbar clean */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        
+        .loading-spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: #f97316;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // --- ICONS COMPONENT WRAPPER ---
+        const Icon = ({ name, size = 20, className = "" }) => {
+            useEffect(() => {
+                lucide.createIcons();
+            }, [name]);
+            return <i data-lucide={name} width={size} height={size} className={className}></i>;
+        };
+
+        // --- MOCK DATA / CONSTANTS ---
+        const NOTES_DATA = [
+            {
+                ue: "UE1 : Marketing & Vente BtoB",
+                coeff: 4,
+                subjects: [
+                    { name: "Marketing Industriel", grade: 14, coeff: 2 },
+                    { name: "Négociation Achat/Vente", grade: 16.5, coeff: 3 },
+                    { name: "Relation Client", grade: 12, coeff: 1 }
+                ]
+            },
+            {
+                ue: "UE2 : Communication & Négociation",
+                coeff: 3,
+                subjects: [
+                    { name: "Anglais Business", grade: 15, coeff: 2 },
+                    { name: "Communication Digitale", grade: 13, coeff: 1 },
+                    { name: "Droit des Affaires", grade: null, coeff: 1.5 } // Pas encore de note
+                ]
+            },
+            {
+                ue: "UE3 : Environnement Industriel",
+                coeff: 5,
+                subjects: [
+                    { name: "Logistique & Supply Chain", grade: 11, coeff: 2 },
+                    { name: "Technologie Industrielle", grade: 18, coeff: 3 },
+                    { name: "Qualité & RSE", grade: 14, coeff: 1 }
+                ]
+            }
+        ];
+
+        // --- HOOKS ---
+
+        // Hook pour gérer le parsing ICS
+        const useAdePlanning = () => {
+            const [events, setEvents] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+
+            const CALENDAR_URL = "https://edt.univ-lyon1.fr/jsp/custom/modules/plannings/anonymous_cal.jsp?resources=5782&projectId=1&calType=ical&firstDate=2025-08-18&lastDate=2026-08-01";
+            // Utilisation d'un proxy CORS fiable
+            const PROXY_URL = `https://api.allorigins.win/raw?url=${encodeURIComponent(CALENDAR_URL)}`;
+
+            useEffect(() => {
+                const fetchCalendar = async () => {
+                    try {
+                        const response = await fetch(PROXY_URL);
+                        if (!response.ok) throw new Error("Erreur réseau");
+                        const icsData = await response.text();
+
+                        const jcalData = ICAL.parse(icsData);
+                        const comp = new ICAL.Component(jcalData);
+                        const vevents = comp.getAllSubcomponents('vevent');
+
+                        const parsedEvents = vevents.map(vevent => {
+                            const event = new ICAL.Event(vevent);
+                            const summary = event.summary || "Cours inconnu";
+                            const description = event.description || "";
+                            
+                            // Détection du type
+                            let type = "DEFAULT";
+                            if (summary.includes("CM") || description.includes("CM")) type = "CM";
+                            else if (summary.includes("TD") || description.includes("TD")) type = "TD";
+                            else if (summary.includes("TP") || description.includes("TP")) type = "TP";
+                            else if (summary.includes("EXAM") || summary.includes("DS") || summary.includes("CC")) type = "EXAM";
+
+                            return {
+                                id: event.uid,
+                                title: summary,
+                                start: event.startDate.toJSDate(),
+                                end: event.endDate.toJSDate(),
+                                location: event.location,
+                                description: description,
+                                type: type
+                            };
+                        });
+
+                        // Trier par date
+                        parsedEvents.sort((a, b) => a.start - b.start);
+                        setEvents(parsedEvents);
+                    } catch (err) {
+                        console.error("Erreur parsing ICS:", err);
+                        setError("Impossible de charger l'emploi du temps.");
+                        
+                        // Fallback data pour la démo si l'API échoue
+                        setEvents([
+                            { id: '1', title: 'CM Marketing Stratégique', start: new Date(new Date().setHours(8,0)), end: new Date(new Date().setHours(10,0)), location: 'Amphi B', type: 'CM', description: 'M. Dupont' },
+                            { id: '2', title: 'TD Négociation', start: new Date(new Date().setHours(10,15)), end: new Date(new Date().setHours(12,15)), location: 'Salle 204', type: 'TD', description: 'Mme Martin' },
+                            { id: '3', title: 'TP Technologie Pompe à Chaleur', start: new Date(new Date().setHours(14,0)), end: new Date(new Date().setHours(17,0)), location: 'Atelier 3', type: 'TP', description: 'Atelier pratique' },
+                        ]);
+                    } finally {
+                        setLoading(false);
+                    }
+                };
+
+                fetchCalendar();
+            }, []);
+
+            return { events, loading, error };
+        };
+
+        // --- COMPONENTS ---
+
+        const Card = ({ children, className = "" }) => (
+            <div className={`bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden ${className}`}>
+                {children}
+            </div>
+        );
+
+        const Badge = ({ type, text }) => {
+            const styles = {
+                CM: "bg-navy-800 text-white",
+                TD: "bg-emerald-600 text-white",
+                TP: "bg-industrial-500 text-white",
+                EXAM: "bg-red-600 text-white",
+                DEFAULT: "bg-slate-400 text-white"
+            };
+            return (
+                <span className={`px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wider ${styles[type] || styles.DEFAULT}`}>
+                    {text || type}
+                </span>
+            );
+        };
+
+        // --- FEATURE: CALENDAR (TIMELINE) ---
+        const CalendarView = ({ events, loading }) => {
+            if (loading) return <div className="flex justify-center p-12"><div className="loading-spinner"></div></div>;
+
+            const today = new Date();
+            today.setHours(0,0,0,0);
+
+            // Filtrer les événements passés (garder aujourd'hui et futur)
+            const upcomingEvents = events.filter(e => e.start >= today);
+
+            // Group by Day
+            const groupedEvents = upcomingEvents.reduce((groups, event) => {
+                const dateKey = event.start.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+                if (!groups[dateKey]) groups[dateKey] = [];
+                groups[dateKey].push(event);
+                return groups;
+            }, {});
+
+            return (
+                <div className="space-y-6 animate-fade-in">
+                    <header className="mb-6">
+                        <h2 className="text-2xl font-bold text-navy-800">Mon Planning</h2>
+                        <p className="text-slate-500">Vue chronologique des cours à venir</p>
+                    </header>
+
+                    {Object.keys(groupedEvents).length === 0 ? (
+                        <div className="text-center p-8 text-slate-400">Aucun cours à venir.</div>
+                    ) : (
+                        Object.entries(groupedEvents).map(([date, dayEvents], idx) => (
+                            <div key={idx} className="relative pl-4 md:pl-0">
+                                <h3 className="sticky top-0 bg-[#f8fafc] py-2 z-10 font-bold text-lg text-slate-700 border-b border-slate-200 mb-4 capitalize">
+                                    {date}
+                                </h3>
+                                <div className="space-y-3">
+                                    {dayEvents.map(event => (
+                                        <Card key={event.id} className="flex flex-col md:flex-row relative group hover:shadow-md transition-shadow">
+                                            {/* Left color bar */}
+                                            <div className={`absolute left-0 top-0 bottom-0 w-1.5 
+                                                ${event.type === 'CM' ? 'bg-navy-800' : 
+                                                  event.type === 'TD' ? 'bg-emerald-500' : 
+                                                  event.type === 'TP' ? 'bg-industrial-500' : 
+                                                  event.type === 'EXAM' ? 'bg-red-600' : 'bg-slate-300'}`}>
+                                            </div>
+                                            
+                                            <div className="p-4 flex-1 flex flex-col md:flex-row md:items-center gap-4 ml-2">
+                                                {/* Time */}
+                                                <div className="flex flex-col min-w-[80px] text-center md:text-left">
+                                                    <span className="text-lg font-bold text-slate-800">
+                                                        {event.start.toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'})}
+                                                    </span>
+                                                    <span className="text-sm text-slate-400">
+                                                        {event.end.toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'})}
+                                                    </span>
+                                                </div>
+
+                                                {/* Content */}
+                                                <div className="flex-1">
+                                                    <div className="flex items-center gap-2 mb-1">
+                                                        <Badge type={event.type} />
+                                                        <span className="text-xs text-slate-500 font-medium truncate max-w-[200px]">{event.id.slice(0,8)}...</span>
+                                                    </div>
+                                                    <h4 className="font-semibold text-slate-800 text-lg leading-tight mb-1">
+                                                        {event.title}
+                                                    </h4>
+                                                    <p className="text-sm text-slate-600 flex items-center gap-2">
+                                                        <Icon name="user" size={14} /> {event.description || "Prof. non spécifié"}
+                                                    </p>
+                                                </div>
+
+                                                {/* Location */}
+                                                <div className="mt-2 md:mt-0 md:text-right min-w-[100px]">
+                                                    <div className="inline-flex items-center gap-1.5 bg-slate-100 px-3 py-1.5 rounded-lg text-sm font-bold text-navy-800">
+                                                        <Icon name="map-pin" size={14} />
+                                                        {event.location || "En ligne"}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </Card>
+                                    ))}
+                                </div>
+                            </div>
+                        ))
+                    )}
+                </div>
+            );
+        };
+
+        // --- FEATURE: GRADES ---
+        const GradesView = () => {
+            // Calculer la moyenne générale
+            const globalStats = useMemo(() => {
+                let totalPoints = 0;
+                let totalCoeff = 0;
+
+                NOTES_DATA.forEach(ue => {
+                    ue.subjects.forEach(sub => {
+                        if (sub.grade !== null) {
+                            totalPoints += sub.grade * sub.coeff;
+                            totalCoeff += sub.coeff;
+                        }
+                    });
+                });
+
+                return totalCoeff > 0 ? (totalPoints / totalCoeff).toFixed(2) : "N/A";
+            }, []);
+
+            return (
+                <div className="space-y-6">
+                    <header className="flex justify-between items-end">
+                        <div>
+                            <h2 className="text-2xl font-bold text-navy-800">Mes Résultats</h2>
+                            <p className="text-slate-500">Suivi des notes BUT TCSI</p>
+                        </div>
+                        <div className="text-right">
+                            <span className="text-sm text-slate-500 uppercase font-semibold">Moyenne Générale</span>
+                            <div className="text-3xl font-bold text-industrial-500">{globalStats} / 20</div>
+                        </div>
+                    </header>
+
+                    <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+                        {NOTES_DATA.map((ue, idx) => {
+                            // Calcul moyenne UE
+                            let uePoints = 0;
+                            let ueCoeff = 0;
+                            ue.subjects.forEach(s => {
+                                if(s.grade !== null) {
+                                    uePoints += s.grade * s.coeff;
+                                    ueCoeff += s.coeff;
+                                }
+                            });
+                            const ueAvg = ueCoeff > 0 ? (uePoints / ueCoeff).toFixed(2) : "N/A";
+
+                            return (
+                                <Card key={idx} className="flex flex-col">
+                                    <div className="p-4 bg-navy-800 text-white">
+                                        <div className="flex justify-between items-start">
+                                            <h3 className="font-bold text-sm opacity-90">{ue.ue}</h3>
+                                            <span className="bg-white/20 px-2 py-0.5 rounded text-xs">Coef {ue.coeff}</span>
+                                        </div>
+                                        <div className="mt-2 text-2xl font-bold">{ueAvg}</div>
+                                    </div>
+                                    <div className="p-4 space-y-3 flex-1">
+                                        {ue.subjects.map((sub, sIdx) => (
+                                            <div key={sIdx} className="flex justify-between items-center text-sm border-b border-slate-100 last:border-0 pb-2 last:pb-0">
+                                                <div className="flex-1">
+                                                    <div className="font-medium text-slate-700">{sub.name}</div>
+                                                    <div className="text-xs text-slate-400">Coef {sub.coeff}</div>
+                                                </div>
+                                                <div className={`font-bold ${sub.grade >= 10 ? 'text-emerald-600' : sub.grade === null ? 'text-slate-300' : 'text-red-500'}`}>
+                                                    {sub.grade !== null ? sub.grade : '-'}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </Card>
+                            )
+                        })}
+                    </div>
+                </div>
+            );
+        };
+
+        // --- FEATURE: PROJECTS (KANBAN) ---
+        const ProjectsView = () => {
+            const [projects, setProjects] = useState([
+                { id: 1, title: "SAÉ 2.1 - Étude marché Pompe à Chaleur", status: "DOING", due: "15/03", members: ["Toi", "Léa", "Marc"] },
+                { id: 2, title: "SAÉ 1.2 - Vente simulée (Sketch)", status: "TODO", due: "20/03", members: ["Toi", "Thomas"] },
+                { id: 3, title: "Dossier Droit des contrats", status: "DONE", due: "10/02", members: ["Indiv."] },
+            ]);
+
+            const moveProject = (id, newStatus) => {
+                setProjects(projects.map(p => p.id === id ? { ...p, status: newStatus } : p));
+            };
+
+            const columns = [
+                { id: 'TODO', label: 'À faire', color: 'bg-slate-200' },
+                { id: 'DOING', label: 'En cours', color: 'bg-industrial-500/10 text-industrial-600' },
+                { id: 'DONE', label: 'Terminé', color: 'bg-emerald-500/10 text-emerald-600' }
+            ];
+
+            return (
+                <div className="h-[calc(100vh-140px)] flex flex-col">
+                    <header className="mb-6">
+                        <h2 className="text-2xl font-bold text-navy-800">Projets SAÉ</h2>
+                        <p className="text-slate-500">Gestion de projet agile</p>
+                    </header>
+
+                    <div className="flex-1 overflow-x-auto">
+                        <div className="flex gap-4 min-w-[800px] h-full">
+                            {columns.map(col => (
+                                <div key={col.id} className="flex-1 bg-slate-50/50 rounded-xl border border-slate-200 flex flex-col max-h-full">
+                                    <div className={`p-3 font-bold border-b border-slate-100 flex justify-between items-center ${col.color.includes('bg-slate') ? 'text-slate-600' : ''} ${col.id === 'DOING' ? 'text-industrial-600' : ''} ${col.id === 'DONE' ? 'text-emerald-600' : ''}`}>
+                                        {col.label}
+                                        <span className="bg-white px-2 py-0.5 rounded-full text-xs shadow-sm text-black">
+                                            {projects.filter(p => p.status === col.id).length}
+                                        </span>
+                                    </div>
+                                    <div className="p-3 space-y-3 overflow-y-auto flex-1">
+                                        {projects.filter(p => p.status === col.id).map(p => (
+                                            <Card key={p.id} className="p-3 hover:shadow-md cursor-pointer transition-all border-l-4 border-l-transparent hover:border-l-industrial-500">
+                                                <div className="flex justify-between items-start mb-2">
+                                                    <span className="text-xs font-semibold bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">
+                                                        J-{p.due.split('/')[0]}
+                                                    </span>
+                                                    {/* Simple controls to move cards */}
+                                                    <div className="flex gap-1">
+                                                        {col.id !== 'TODO' && (
+                                                            <button onClick={() => moveProject(p.id, col.id === 'DONE' ? 'DOING' : 'TODO')} className="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-navy-800"><Icon name="arrow-left" size={14}/></button>
+                                                        )}
+                                                        {col.id !== 'DONE' && (
+                                                            <button onClick={() => moveProject(p.id, col.id === 'TODO' ? 'DOING' : 'DONE')} className="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-navy-800"><Icon name="arrow-right" size={14}/></button>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                <h4 className="font-bold text-slate-800 text-sm mb-3">{p.title}</h4>
+                                                
+                                                <div className="flex items-center justify-between text-xs text-slate-500">
+                                                    <div className="flex -space-x-2">
+                                                        {p.members.map((m, i) => (
+                                                            <div key={i} className="w-6 h-6 rounded-full bg-navy-800 text-white flex items-center justify-center border border-white text-[10px]" title={m}>
+                                                                {m.charAt(0)}
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                    <div className="flex items-center gap-1">
+                                                        <Icon name="calendar" size={12} /> {p.due}
+                                                    </div>
+                                                </div>
+                                            </Card>
+                                        ))}
+                                        
+                                        <button className="w-full py-2 border border-dashed border-slate-300 rounded-lg text-slate-400 text-sm hover:border-industrial-500 hover:text-industrial-500 transition-colors flex items-center justify-center gap-2">
+                                            <Icon name="plus" size={16} /> Ajouter une tâche
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )
+        }
+
+        // --- MAIN APP ---
+        const App = () => {
+            const [activeTab, setActiveTab] = useState('agenda');
+            const { events, loading } = useAdePlanning();
+
+            // Navigation configuration
+            const navItems = [
+                { id: 'agenda', label: 'Mon Agenda', icon: 'calendar' },
+                { id: 'grades', label: 'Mes Notes', icon: 'bar-chart-2' },
+                { id: 'projects', label: 'Projets SAÉ', icon: 'trello' },
+                { id: 'profile', label: 'Profil', icon: 'user' },
+            ];
+
+            const renderContent = () => {
+                switch(activeTab) {
+                    case 'agenda': return <CalendarView events={events} loading={loading} />;
+                    case 'grades': return <GradesView />;
+                    case 'projects': return <ProjectsView />;
+                    default: return <div className="p-8 text-center text-slate-500">Section en construction</div>;
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col md:flex-row">
+                    
+                    {/* Mobile Header */}
+                    <div className="md:hidden bg-navy-800 text-white p-4 flex justify-between items-center sticky top-0 z-50 shadow-md">
+                        <div className="font-bold text-xl flex items-center gap-2">
+                            <span className="text-industrial-500"><Icon name="hexagon" /></span> TCSI Planner
+                        </div>
+                        <button className="p-2"><Icon name="bell" /></button>
+                    </div>
+
+                    {/* Desktop Sidebar */}
+                    <aside className="hidden md:flex flex-col w-64 bg-navy-800 text-white h-screen sticky top-0 shadow-xl">
+                        <div className="p-6">
+                            <h1 className="text-2xl font-bold flex items-center gap-2">
+                                <span className="text-industrial-500"><Icon name="hexagon" className="fill-current" /></span> 
+                                TCSI Planner
+                            </h1>
+                            <p className="text-xs text-slate-400 mt-1">Assistant Systèmes Industriels</p>
+                        </div>
+
+                        <nav className="flex-1 px-4 py-6 space-y-2">
+                            {navItems.map(item => (
+                                <button 
+                                    key={item.id}
+                                    onClick={() => setActiveTab(item.id)}
+                                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
+                                        activeTab === item.id 
+                                        ? 'bg-industrial-500 text-white shadow-lg shadow-industrial-500/30' 
+                                        : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                                    }`}
+                                >
+                                    <Icon name={item.icon} size={20} />
+                                    <span className="font-medium">{item.label}</span>
+                                </button>
+                            ))}
+                        </nav>
+
+                        <div className="p-4 mt-auto">
+                            <div className="bg-navy-900 rounded-xl p-4 flex items-center gap-3 border border-white/10">
+                                <div className="w-10 h-10 rounded-full bg-slate-200 flex items-center justify-center text-navy-900 font-bold">
+                                    ET
+                                </div>
+                                <div>
+                                    <div className="text-sm font-bold">Étudiante TCSI</div>
+                                    <div className="text-xs text-slate-400">Lyon 1 - Semestre 2</div>
+                                </div>
+                            </div>
+                        </div>
+                    </aside>
+
+                    {/* Main Content */}
+                    <main className="flex-1 p-4 md:p-8 overflow-y-auto h-[calc(100vh-60px)] md:h-screen">
+                        <div className="max-w-5xl mx-auto">
+                            {renderContent()}
+                        </div>
+                    </main>
+
+                    {/* Mobile Bottom Nav */}
+                    <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 flex justify-around p-3 pb-safe z-50">
+                        {navItems.map(item => (
+                            <button 
+                                key={item.id}
+                                onClick={() => setActiveTab(item.id)}
+                                className={`flex flex-col items-center gap-1 ${
+                                    activeTab === item.id ? 'text-industrial-600' : 'text-slate-400'
+                                }`}
+                            >
+                                <Icon name={item.icon} size={24} />
+                                <span className="text-[10px] font-medium">{item.label}</span>
+                            </button>
+                        ))}
+                    </nav>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
