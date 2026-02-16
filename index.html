@@ -96,7 +96,7 @@
             return <i data-lucide={name} width={size} height={size} className={className}></i>;
         };
 
-        // --- MOCK DATA / CONSTANTS ---
+        // --- MOCK DATA / CONSTANTS (POUR LES NOTES & PROJETS SEULEMENT) ---
         const NOTES_DATA = [
             {
                 ue: "UE1 : Marketing & Vente BtoB",
@@ -127,78 +127,75 @@
             }
         ];
 
-        // --- HOOK: useAdeEvents ---
-        const useAdeEvents = () => {
+        // --- NOUVEAU HOOK: useAdePlanning (IMPLEMENTATION STRICTE) ---
+        const PROXY_URL = "https://api.allorigins.win/get?url=";
+        const ADE_URL = "https://edt.univ-lyon1.fr/jsp/custom/modules/plannings/anonymous_cal.jsp?resources=5782&projectId=1&calType=ical&firstDate=2025-08-18&lastDate=2026-08-01";
+
+        const useAdePlanning = () => {
             const [events, setEvents] = useState([]);
             const [loading, setLoading] = useState(true);
             const [error, setError] = useState(null);
-            const [retryCount, setRetryCount] = useState(0);
+            const [retryCount, setRetryCount] = useState(0); // Gardé pour le bouton refresh
 
             useEffect(() => {
-                const fetchICS = async () => {
+                const fetchIcs = async () => {
                     setLoading(true);
                     setError(null);
-                    
-                    const targetUrl = encodeURIComponent("https://edt.univ-lyon1.fr/jsp/custom/modules/plannings/anonymous_cal.jsp?resources=5782&projectId=1&calType=ical&firstDate=2025-08-18&lastDate=2026-08-01");
-                    const proxyUrl = `https://api.allorigins.win/raw?url=${targetUrl}`;
-
                     try {
-                        console.log("Fetching calendar from:", proxyUrl);
-                        const response = await fetch(proxyUrl);
-                        if (!response.ok) throw new Error("Erreur réseau lors de la récupération");
+                        console.log("Fetching ADE via Proxy...");
+                        // 1. On passe par AllOrigins (endpoint /get) pour éviter l'erreur CORS
+                        const response = await fetch(PROXY_URL + encodeURIComponent(ADE_URL));
+                        if (!response.ok) throw new Error("Erreur réseau proxy");
                         
-                        const data = await response.text();
-                        
-                        if (!data.includes("BEGIN:VCALENDAR")) {
-                            throw new Error("Format de fichier invalide (pas un ICS)");
-                        }
+                        const json = await response.json();
+                        // AllOrigins renvoie le contenu du fichier dans .contents
+                        const icsData = json.contents; 
 
-                        const jcalData = ICAL.parse(data);
+                        if (!icsData) throw new Error("Fichier ICS vide ou illisible");
+
+                        // 2. Parsing avec ical.js
+                        const jcalData = ICAL.parse(icsData);
                         const comp = new ICAL.Component(jcalData);
                         const vevents = comp.getAllSubcomponents('vevent');
-                        
-                        const parsedEvents = vevents.map(ev => {
-                            const event = new ICAL.Event(ev);
-                            const title = event.summary || "Cours inconnu";
-                            const description = event.description || "";
-                            
-                            // Logique Couleur
-                            let color = '#1e293b'; // Default Navy
-                            const upperTitle = title.toUpperCase();
-                            const upperDesc = description.toUpperCase();
 
-                            if (upperTitle.includes('TP') || upperDesc.includes('TP')) color = '#f97316'; // Orange
-                            else if (upperTitle.includes('TD') || upperDesc.includes('TD')) color = '#059669'; // Green
-                            else if (upperTitle.includes('EXAM') || upperTitle.includes('DS')) color = '#dc2626'; // Red
-                            else if (upperTitle.includes('CM')) color = '#1e293b'; // Navy
+                        // 3. Mapping pour FullCalendar
+                        const formattedEvents = vevents.map(vevent => {
+                            const event = new ICAL.Event(vevent);
+                            const summary = event.summary || "Cours inconnu";
+                            
+                            // Code couleur simple
+                            let color = '#3b82f6'; // Bleu par défaut
+                            if (summary.includes('TP')) color = '#f97316'; // Orange
+                            if (summary.includes('CM')) color = '#1e293b'; // Marine
+                            if (summary.includes('Exam') || summary.includes('DS')) color = '#ef4444'; // Rouge
 
                             return {
                                 id: event.uid,
-                                title: title,
-                                start: event.startDate.toJSDate(),
+                                title: summary,
+                                start: event.startDate.toJSDate(), // Conversion date JS
                                 end: event.endDate.toJSDate(),
                                 extendedProps: {
-                                    location: event.location,
-                                    description: description,
-                                    prof: description // Souvent le prof est dans la description
+                                    location: event.location || "Salle inconnue",
+                                    description: event.description,
+                                    prof: event.description // Pour compatibilité affichage
                                 },
                                 backgroundColor: color,
-                                borderColor: 'transparent',
+                                borderColor: color,
                                 textColor: '#ffffff'
                             };
                         });
-                        
-                        console.log(`${parsedEvents.length} événements parsés.`);
-                        setEvents(parsedEvents);
-                    } catch (e) {
-                        console.error("Erreur ADE", e);
-                        setError(e.message || "Erreur de connexion ADE");
+
+                        console.log(`${formattedEvents.length} événements chargés !`);
+                        setEvents(formattedEvents);
+                    } catch (err) {
+                        console.error("Erreur chargement ADE:", err);
+                        setError("Impossible de charger le planning (Erreur CORS ou URL)");
                     } finally {
                         setLoading(false);
                     }
                 };
-                
-                fetchICS();
+
+                fetchIcs();
             }, [retryCount]);
 
             const retry = () => setRetryCount(c => c + 1);
@@ -285,7 +282,7 @@
             if (loading) return (
                 <div className="flex flex-col items-center justify-center p-12 h-96">
                     <div className="loading-spinner mb-4"></div>
-                    <p className="text-slate-500 animate-pulse">Connexion au serveur ADE...</p>
+                    <p className="text-slate-500 animate-pulse">Récupération du planning ADE...</p>
                 </div>
             );
 
@@ -305,7 +302,7 @@
                     <header className="flex justify-between items-center mb-2">
                          <div>
                             <h2 className="text-2xl font-bold text-navy-800">Mon Emploi du Temps</h2>
-                            <p className="text-slate-500 text-sm">Synchronisé avec ADE Lyon 1</p>
+                            <p className="text-slate-500 text-sm">Synchronisé avec ADE Lyon 1 (Réel)</p>
                         </div>
                         <div className="flex gap-2">
                             <button onClick={retry} className="p-2 text-slate-500 hover:bg-slate-100 rounded-full" title="Forcer la synchro">
@@ -316,11 +313,11 @@
                     
                     <FullCalendarComponent events={events} />
                     
-                    <div className="flex gap-4 mt-4 text-sm justify-center md:justify-start">
+                    <div className="flex gap-4 mt-4 text-sm justify-center md:justify-start flex-wrap">
                         <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-navy-800"></div> CM (Cours)</div>
-                        <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-emerald-600"></div> TD (Dirigés)</div>
+                        <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-blue-500"></div> Autre</div>
                         <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-industrial-500"></div> TP (Pratiques)</div>
-                         <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-red-600"></div> Exam</div>
+                         <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-red-500"></div> Exam/DS</div>
                     </div>
                 </div>
             );
@@ -453,7 +450,8 @@
         // --- MAIN APP ---
         const App = () => {
             const [activeTab, setActiveTab] = useState('agenda');
-            const { events, loading, error, retry } = useAdeEvents();
+            // Utilisation du nouveau hook useAdePlanning
+            const { events, loading, error, retry } = useAdePlanning();
 
             const navItems = [
                 { id: 'agenda', label: 'Mon Agenda', icon: 'calendar' },
