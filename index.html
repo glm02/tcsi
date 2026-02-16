@@ -67,17 +67,17 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo } = React;
+        const { useState, useEffect, useMemo, useCallback } = React;
 
         // --- ICONS COMPONENT WRAPPER ---
         const Icon = ({ name, size = 20, className = "" }) => {
             useEffect(() => {
-                lucide.createIcons();
+                if (window.lucide) window.lucide.createIcons();
             }, [name]);
             return <i data-lucide={name} width={size} height={size} className={className}></i>;
         };
 
-        // --- MOCK DATA / CONSTANTS ---
+        // --- MOCK DATA / CONSTANTS (POUR LES NOTES & PROJETS SEULEMENT) ---
         const NOTES_DATA = [
             {
                 ue: "UE1 : Marketing & Vente BtoB",
@@ -94,7 +94,7 @@
                 subjects: [
                     { name: "Anglais Business", grade: 15, coeff: 2 },
                     { name: "Communication Digitale", grade: 13, coeff: 1 },
-                    { name: "Droit des Affaires", grade: null, coeff: 1.5 } // Pas encore de note
+                    { name: "Droit des Affaires", grade: null, coeff: 1.5 } 
                 ]
             },
             {
@@ -115,67 +115,81 @@
             const [events, setEvents] = useState([]);
             const [loading, setLoading] = useState(true);
             const [error, setError] = useState(null);
+            const [retryCount, setRetryCount] = useState(0);
 
+            // URL directe de l'ADE Lyon 1
             const CALENDAR_URL = "https://edt.univ-lyon1.fr/jsp/custom/modules/plannings/anonymous_cal.jsp?resources=5782&projectId=1&calType=ical&firstDate=2025-08-18&lastDate=2026-08-01";
-            // Utilisation d'un proxy CORS fiable
-            const PROXY_URL = `https://api.allorigins.win/raw?url=${encodeURIComponent(CALENDAR_URL)}`;
+            
+            // Utilisation de corsproxy.io qui est souvent plus fiable pour les fichiers raw que allorigins
+            const PROXY_URL = `https://corsproxy.io/?${encodeURIComponent(CALENDAR_URL)}`;
+
+            const fetchCalendar = useCallback(async () => {
+                setLoading(true);
+                setError(null);
+                try {
+                    console.log("Tentative de récupération du planning...");
+                    const response = await fetch(PROXY_URL);
+                    
+                    if (!response.ok) {
+                        throw new Error(`Erreur HTTP: ${response.status}`);
+                    }
+                    
+                    const icsData = await response.text();
+                    
+                    if (!icsData || !icsData.includes("BEGIN:VCALENDAR")) {
+                        throw new Error("Le fichier reçu n'est pas un calendrier valide.");
+                    }
+
+                    const jcalData = ICAL.parse(icsData);
+                    const comp = new ICAL.Component(jcalData);
+                    const vevents = comp.getAllSubcomponents('vevent');
+
+                    const parsedEvents = vevents.map(vevent => {
+                        const event = new ICAL.Event(vevent);
+                        const summary = event.summary || "Cours inconnu";
+                        const description = event.description || "";
+                        
+                        // Détection du type pour la couleur
+                        let type = "DEFAULT";
+                        const upperSum = summary.toUpperCase();
+                        const upperDesc = description.toUpperCase();
+                        
+                        if (upperSum.includes("CM") || upperDesc.includes("CM")) type = "CM";
+                        else if (upperSum.includes("TD") || upperDesc.includes("TD")) type = "TD";
+                        else if (upperSum.includes("TP") || upperDesc.includes("TP")) type = "TP";
+                        else if (upperSum.includes("EXAM") || upperSum.includes("DS") || upperSum.includes("CC")) type = "EXAM";
+
+                        return {
+                            id: event.uid,
+                            title: summary,
+                            start: event.startDate.toJSDate(),
+                            end: event.endDate.toJSDate(),
+                            location: event.location,
+                            description: description,
+                            type: type
+                        };
+                    });
+
+                    // Trier par date
+                    parsedEvents.sort((a, b) => a.start - b.start);
+                    console.log(`${parsedEvents.length} événements chargés.`);
+                    setEvents(parsedEvents);
+                } catch (err) {
+                    console.error("Erreur parsing ICS:", err);
+                    setError(err.message || "Impossible de charger l'emploi du temps.");
+                    setEvents([]); // AUCUNE donnée fictive n'est chargée ici
+                } finally {
+                    setLoading(false);
+                }
+            }, [PROXY_URL]);
 
             useEffect(() => {
-                const fetchCalendar = async () => {
-                    try {
-                        const response = await fetch(PROXY_URL);
-                        if (!response.ok) throw new Error("Erreur réseau");
-                        const icsData = await response.text();
-
-                        const jcalData = ICAL.parse(icsData);
-                        const comp = new ICAL.Component(jcalData);
-                        const vevents = comp.getAllSubcomponents('vevent');
-
-                        const parsedEvents = vevents.map(vevent => {
-                            const event = new ICAL.Event(vevent);
-                            const summary = event.summary || "Cours inconnu";
-                            const description = event.description || "";
-                            
-                            // Détection du type
-                            let type = "DEFAULT";
-                            if (summary.includes("CM") || description.includes("CM")) type = "CM";
-                            else if (summary.includes("TD") || description.includes("TD")) type = "TD";
-                            else if (summary.includes("TP") || description.includes("TP")) type = "TP";
-                            else if (summary.includes("EXAM") || summary.includes("DS") || summary.includes("CC")) type = "EXAM";
-
-                            return {
-                                id: event.uid,
-                                title: summary,
-                                start: event.startDate.toJSDate(),
-                                end: event.endDate.toJSDate(),
-                                location: event.location,
-                                description: description,
-                                type: type
-                            };
-                        });
-
-                        // Trier par date
-                        parsedEvents.sort((a, b) => a.start - b.start);
-                        setEvents(parsedEvents);
-                    } catch (err) {
-                        console.error("Erreur parsing ICS:", err);
-                        setError("Impossible de charger l'emploi du temps.");
-                        
-                        // Fallback data pour la démo si l'API échoue
-                        setEvents([
-                            { id: '1', title: 'CM Marketing Stratégique', start: new Date(new Date().setHours(8,0)), end: new Date(new Date().setHours(10,0)), location: 'Amphi B', type: 'CM', description: 'M. Dupont' },
-                            { id: '2', title: 'TD Négociation', start: new Date(new Date().setHours(10,15)), end: new Date(new Date().setHours(12,15)), location: 'Salle 204', type: 'TD', description: 'Mme Martin' },
-                            { id: '3', title: 'TP Technologie Pompe à Chaleur', start: new Date(new Date().setHours(14,0)), end: new Date(new Date().setHours(17,0)), location: 'Atelier 3', type: 'TP', description: 'Atelier pratique' },
-                        ]);
-                    } finally {
-                        setLoading(false);
-                    }
-                };
-
                 fetchCalendar();
-            }, []);
+            }, [fetchCalendar, retryCount]);
 
-            return { events, loading, error };
+            const retry = () => setRetryCount(c => c + 1);
+
+            return { events, loading, error, retry };
         };
 
         // --- COMPONENTS ---
@@ -202,8 +216,28 @@
         };
 
         // --- FEATURE: CALENDAR (TIMELINE) ---
-        const CalendarView = ({ events, loading }) => {
-            if (loading) return <div className="flex justify-center p-12"><div className="loading-spinner"></div></div>;
+        const CalendarView = ({ events, loading, error, retry }) => {
+            if (loading) return (
+                <div className="flex flex-col items-center justify-center p-12 h-64">
+                    <div className="loading-spinner mb-4"></div>
+                    <p className="text-slate-500 animate-pulse">Synchronisation avec l'université...</p>
+                </div>
+            );
+
+            if (error) return (
+                <div className="flex flex-col items-center justify-center p-8 text-center bg-red-50 border border-red-200 rounded-xl">
+                    <div className="text-red-500 mb-2"><Icon name="wifi-off" size={48} /></div>
+                    <h3 className="text-lg font-bold text-red-700 mb-2">Erreur de connexion</h3>
+                    <p className="text-red-600 mb-4 max-w-md">{error}</p>
+                    <p className="text-sm text-slate-500 mb-6">Le serveur de l'université bloque parfois les requêtes externes (CORS).</p>
+                    <button 
+                        onClick={retry}
+                        className="px-4 py-2 bg-navy-800 text-white rounded-lg hover:bg-navy-900 transition-colors flex items-center gap-2"
+                    >
+                        <Icon name="refresh-cw" size={16} /> Réessayer
+                    </button>
+                </div>
+            );
 
             const today = new Date();
             today.setHours(0,0,0,0);
@@ -221,17 +255,29 @@
 
             return (
                 <div className="space-y-6 animate-fade-in">
-                    <header className="mb-6">
-                        <h2 className="text-2xl font-bold text-navy-800">Mon Planning</h2>
-                        <p className="text-slate-500">Vue chronologique des cours à venir</p>
+                    <header className="mb-6 flex justify-between items-center">
+                        <div>
+                            <h2 className="text-2xl font-bold text-navy-800">Mon Planning</h2>
+                            <p className="text-slate-500">Vue chronologique officielle</p>
+                        </div>
+                        <button onClick={retry} title="Actualiser" className="p-2 text-slate-400 hover:text-navy-800 hover:bg-slate-100 rounded-full transition-all">
+                            <Icon name="refresh-cw" size={20} />
+                        </button>
                     </header>
 
                     {Object.keys(groupedEvents).length === 0 ? (
-                        <div className="text-center p-8 text-slate-400">Aucun cours à venir.</div>
+                        <div className="text-center p-12 bg-white rounded-xl border border-slate-200">
+                            <div className="inline-block p-4 bg-slate-50 rounded-full mb-3 text-slate-400">
+                                <Icon name="calendar-check" size={32} />
+                            </div>
+                            <h3 className="text-lg font-bold text-slate-700">Aucun cours à venir</h3>
+                            <p className="text-slate-500">Votre emploi du temps semble libre pour les prochains jours.</p>
+                        </div>
                     ) : (
                         Object.entries(groupedEvents).map(([date, dayEvents], idx) => (
                             <div key={idx} className="relative pl-4 md:pl-0">
-                                <h3 className="sticky top-0 bg-[#f8fafc] py-2 z-10 font-bold text-lg text-slate-700 border-b border-slate-200 mb-4 capitalize">
+                                <h3 className="sticky top-0 bg-[#f8fafc] py-2 z-10 font-bold text-lg text-slate-700 border-b border-slate-200 mb-4 capitalize flex items-center gap-2">
+                                    <Icon name="calendar" size={16} className="text-industrial-500" />
                                     {date}
                                 </h3>
                                 <div className="space-y-3">
@@ -247,7 +293,7 @@
                                             
                                             <div className="p-4 flex-1 flex flex-col md:flex-row md:items-center gap-4 ml-2">
                                                 {/* Time */}
-                                                <div className="flex flex-col min-w-[80px] text-center md:text-left">
+                                                <div className="flex flex-col min-w-[80px] text-center md:text-left border-r border-slate-100 pr-4 md:border-none md:pr-0">
                                                     <span className="text-lg font-bold text-slate-800">
                                                         {event.start.toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'})}
                                                     </span>
@@ -260,21 +306,21 @@
                                                 <div className="flex-1">
                                                     <div className="flex items-center gap-2 mb-1">
                                                         <Badge type={event.type} />
-                                                        <span className="text-xs text-slate-500 font-medium truncate max-w-[200px]">{event.id.slice(0,8)}...</span>
+                                                        <span className="text-xs text-slate-500 font-medium truncate max-w-[200px]" title={event.id}>{event.id.substring(0, 15)}...</span>
                                                     </div>
                                                     <h4 className="font-semibold text-slate-800 text-lg leading-tight mb-1">
                                                         {event.title}
                                                     </h4>
                                                     <p className="text-sm text-slate-600 flex items-center gap-2">
-                                                        <Icon name="user" size={14} /> {event.description || "Prof. non spécifié"}
+                                                        <Icon name="user" size={14} /> {event.description || "Enseignant non spécifié"}
                                                     </p>
                                                 </div>
 
                                                 {/* Location */}
-                                                <div className="mt-2 md:mt-0 md:text-right min-w-[100px]">
-                                                    <div className="inline-flex items-center gap-1.5 bg-slate-100 px-3 py-1.5 rounded-lg text-sm font-bold text-navy-800">
+                                                <div className="mt-2 md:mt-0 md:text-right min-w-[120px]">
+                                                    <div className="inline-flex items-center gap-1.5 bg-slate-100 px-3 py-1.5 rounded-lg text-sm font-bold text-navy-800 whitespace-nowrap">
                                                         <Icon name="map-pin" size={14} />
-                                                        {event.location || "En ligne"}
+                                                        {event.location || "Non défini"}
                                                     </div>
                                                 </div>
                                             </div>
@@ -447,7 +493,7 @@
         // --- MAIN APP ---
         const App = () => {
             const [activeTab, setActiveTab] = useState('agenda');
-            const { events, loading } = useAdePlanning();
+            const { events, loading, error, retry } = useAdePlanning();
 
             // Navigation configuration
             const navItems = [
@@ -459,7 +505,7 @@
 
             const renderContent = () => {
                 switch(activeTab) {
-                    case 'agenda': return <CalendarView events={events} loading={loading} />;
+                    case 'agenda': return <CalendarView events={events} loading={loading} error={error} retry={retry} />;
                     case 'grades': return <GradesView />;
                     case 'projects': return <ProjectsView />;
                     default: return <div className="p-8 text-center text-slate-500">Section en construction</div>;
